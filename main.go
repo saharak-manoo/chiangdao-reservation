@@ -31,29 +31,29 @@ type apiResp struct {
 }
 
 func main() {
-	csvPath := flag.String("csv", "people.csv", "CSV file (one row per person, rows with the same group = one booking)")
+	path := flag.String("file", "bookings.yaml", "YAML file with bookings (see bookings.example.yaml)")
 	submit := flag.Bool("submit", false, "really submit; without it only prints what would be sent")
-	check := flag.Bool("check", false, "only look up existing reservations for each group (no booking)")
+	check := flag.Bool("check", false, "only look up existing reservations for each booking (no booking made)")
 	at := flag.String("at", "", `wait until this Bangkok time before submitting, e.g. "2026-10-17 09:00:00"`)
-	only := flag.String("group", "", "only process this group")
+	only := flag.String("name", "", "only process the booking with this name")
 	retries := flag.Int("retries", 5, "max attempts per booking on network/5xx errors")
 	retryDelay := flag.Duration("retry-delay", 2*time.Second, "delay between attempts")
 	flag.Parse()
 
-	f, err := os.Open(*csvPath)
+	f, err := os.Open(*path)
 	if err != nil {
 		log.Fatal(err)
 	}
 	bookings, err := loadBookings(f)
 	_ = f.Close()
 	if err != nil {
-		log.Fatalf("%s: %v", *csvPath, err)
+		log.Fatalf("%s: %v", *path, err)
 	}
 
 	if *only != "" {
 		var kept []Booking
 		for _, b := range bookings {
-			if b.Group == *only {
+			if b.Name == *only {
 				kept = append(kept, b)
 			}
 		}
@@ -88,12 +88,12 @@ func main() {
 			time.Sleep(time.Second)
 		}
 		if err := book(b, *retries, *retryDelay); err != nil {
-			log.Printf("[%s] FAILED: %v", b.Group, err)
-			failed = append(failed, b.Group)
+			log.Printf("[%s] FAILED: %v", b.Name, err)
+			failed = append(failed, b.Name)
 		}
 	}
 	if len(failed) > 0 {
-		log.Fatalf("failed groups: %s", strings.Join(failed, ", "))
+		log.Fatalf("failed bookings: %s", strings.Join(failed, ", "))
 	}
 	log.Printf("all %d booking(s) submitted", len(bookings))
 }
@@ -101,9 +101,9 @@ func main() {
 func printDryRun(b Booking) {
 	fields, err := b.formFields()
 	if err != nil {
-		log.Fatalf("[%s] %v", b.Group, err)
+		log.Fatalf("[%s] %v", b.Name, err)
 	}
-	fmt.Printf("\n=== group %s: %s → %s, %d people ===\n", b.Group, b.StartDate, b.EndDate, len(b.People))
+	fmt.Printf("\n=== %s: %s → %s, %d people ===\n", b.Name, b.StartDate, b.EndDate, len(b.People))
 	for _, kv := range fields {
 		fmt.Printf("  %-15s %s\n", kv[0], kv[1])
 	}
@@ -113,11 +113,11 @@ func printStatus(b Booking) {
 	phone, id := b.lookupKey()
 	rs, err := checkReserve(phone, id)
 	if err != nil {
-		log.Printf("[%s] check-reserve failed: %v", b.Group, err)
+		log.Printf("[%s] check-reserve failed: %v", b.Name, err)
 		return
 	}
 	if len(rs) == 0 {
-		log.Printf("[%s] no reservation found", b.Group)
+		log.Printf("[%s] no reservation found", b.Name)
 		return
 	}
 	for _, r := range rs {
@@ -125,7 +125,7 @@ func printStatus(b Booking) {
 		if bookingDate(r.StartDate) == b.StartDate {
 			mark = "  ← matches CSV start_date"
 		}
-		log.Printf("[%s] %s%s", b.Group, r, mark)
+		log.Printf("[%s] %s%s", b.Name, r, mark)
 	}
 }
 
@@ -146,16 +146,16 @@ func waitUntil(s string) {
 func book(b Booking, retries int, delay time.Duration) error {
 	phone, id := b.lookupKey()
 	if rs, err := checkReserve(phone, id); err != nil {
-		log.Printf("[%s] check-reserve failed (%v), submitting anyway", b.Group, err)
+		log.Printf("[%s] check-reserve failed (%v), submitting anyway", b.Name, err)
 	} else if r := findByStartDate(rs, b.StartDate); r != nil {
-		log.Printf("[%s] already booked, skipping: %s", b.Group, r)
+		log.Printf("[%s] already booked, skipping: %s", b.Name, r)
 		return nil
 	}
 
 	if left, err := capacity(b.StartDate); err != nil {
-		log.Printf("[%s] capacity check failed (%v), submitting anyway", b.Group, err)
+		log.Printf("[%s] capacity check failed (%v), submitting anyway", b.Name, err)
 	} else {
-		log.Printf("[%s] %s: %d seat(s) left, need %d", b.Group, b.StartDate, left, len(b.People))
+		log.Printf("[%s] %s: %d seat(s) left, need %d", b.Name, b.StartDate, left, len(b.People))
 		if left < len(b.People) {
 			return fmt.Errorf("not enough seats on %s (%d left)", b.StartDate, left)
 		}
@@ -172,13 +172,13 @@ func book(b Booking, retries int, delay time.Duration) error {
 		default:
 			var r apiResp
 			if json.Unmarshal(body, &r) == nil && r.Status == "success" {
-				log.Printf("[%s] form accepted: %s %s", b.Group, r.Message, trim(r.Data))
+				log.Printf("[%s] form accepted: %s %s", b.Name, r.Message, trim(r.Data))
 				return verifyBooked(b)
 			}
 			// 4xx / business error (full, duplicate, bad data): retrying won't help.
 			return fmt.Errorf("HTTP %d: %s", status, trim(body))
 		}
-		log.Printf("[%s] attempt %d/%d: %v", b.Group, attempt, retries, lastErr)
+		log.Printf("[%s] attempt %d/%d: %v", b.Name, attempt, retries, lastErr)
 		if attempt < retries {
 			time.Sleep(delay)
 		}
@@ -194,7 +194,7 @@ func verifyBooked(b Booking) error {
 		rs, err := checkReserve(phone, id)
 		if err == nil {
 			if r := findByStartDate(rs, b.StartDate); r != nil {
-				log.Printf("[%s] BOOKED ✔ %s", b.Group, r)
+				log.Printf("[%s] BOOKED ✔ %s", b.Name, r)
 				return nil
 			}
 			err = fmt.Errorf("no reservation for %s yet (%d other)", b.StartDate, len(rs))

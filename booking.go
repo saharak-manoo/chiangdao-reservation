@@ -1,115 +1,176 @@
 package main
 
 import (
-	"encoding/csv"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strconv"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
-// Defaults copied from a real browser submission (optional add-on services).
-const (
-	defaultService1 = `[{"id":3,"qty":1},{"id":4,"qty":0},{"id":9,"qty":0},{"id":10,"qty":0},{"id":11,"qty":0},{"id":12,"qty":0},{"id":13,"qty":0},{"id":14,"qty":0},{"id":34,"qty":0}]`
-	defaultService2 = `[{"id":17,"qty":0},{"id":25,"qty":1},{"id":26,"qty":1}]`
-)
+// service is one optional add-on the form sends as {"id":N,"qty":N}.
+// IDs come from GET service/prepayment (list 1) and POST service/payment-at-sanc (list 2).
+type service struct {
+	name string
+	list int // 1 = service1 (prepaid), 2 = service2 (paid at sanctuary)
+	id   int
+	// defaultQty is used when the booking doesn't set the service.
+	defaultQty func(people int) int
+}
+
+func zero(int) int        { return 0 }
+func one(int) int         { return 1 }
+func perPerson(n int) int { return n }
+
+// Order matters: it is the order the browser sends them in.
+var serviceCatalog = []service{
+	{"shared_car", 1, 3, perPerson},      // แชร์ค่ารถ 600/คน
+	{"tent_rent", 1, 9, zero},            // เต็นท์ (เช่าของเขต) 300/เต็นท์
+	{"gas_stove", 1, 10, zero},           // เตาแก๊ส 100/เตา
+	{"sleeping_pad", 1, 11, zero},        // แผ่นรองนอน 50/แผ่น
+	{"pot", 1, 12, zero},                 // หม้อสนาม 80/ใบ
+	{"gas_can", 1, 13, zero},             // แก๊สกระป๋อง 60/กระป๋อง
+	{"sleeping_bag", 1, 14, zero},        // ถุงนอน 100/ถุง
+	{"meal_set", 1, 35, zero},            // ชุดอาหาร 4 มื้อ 950/คน
+	{"porter", 2, 17, zero},              // ลูกหาบ
+	{"own_tent_space", 2, 25, perPerson}, // พื้นที่กางเต็นท์ (นำมาเอง) 30/คน
+	{"own_tent_count", 2, 26, one},       // จำนวนเต็นท์ที่นำมาเอง
+}
 
 type Person struct {
-	Prefix, FirstName, LastName, Phone, BirthDate, IDCard, Passport string
+	Prefix    string `yaml:"prefix"`
+	FirstName string `yaml:"first_name"`
+	LastName  string `yaml:"last_name"`
+	Phone     string `yaml:"phone"`
+	BirthDate string `yaml:"birth_date"`
+	IDCard    string `yaml:"id_card"`
+	Passport  string `yaml:"passport"`
 }
 
-// Booking is one reservation; every CSV row with the same `group` is one person in it.
-// Booking-level columns are read from the group's first row.
+// Booking is one reservation. The first person is the main booker.
 type Booking struct {
-	Group                        string
-	StartDate, EndDate           string
-	Email, Code                  string
-	Bank, BankAccNo, BankAccName string
-	Service1, Service2           string
-	People                       []Person
+	Name        string         `yaml:"name"`
+	StartDate   string         `yaml:"start_date"`
+	EndDate     string         `yaml:"end_date"`
+	Email       string         `yaml:"email"`
+	Code        string         `yaml:"code"`
+	Bank        string         `yaml:"bank"`
+	BankAccNo   string         `yaml:"bank_acc_no"`
+	BankAccName string         `yaml:"bank_acc_name"`
+	Services    map[string]int `yaml:"services"`
+	People      []Person       `yaml:"people"`
+
+	// Built from Services by loadBookings.
+	Service1 string `yaml:"-"`
+	Service2 string `yaml:"-"`
 }
+
+var (
+	dateRe  = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+	phoneRe = regexp.MustCompile(`^0\d{9}$`)
+)
 
 func loadBookings(r io.Reader) ([]Booking, error) {
-	cr := csv.NewReader(r)
-	cr.FieldsPerRecord = -1
-	cr.TrimLeadingSpace = true
-	rows, err := cr.ReadAll()
-	if err != nil {
+	dec := yaml.NewDecoder(r)
+	dec.KnownFields(true) // typo in a field name = error, not silently empty
+	var file struct {
+		Bookings []Booking `yaml:"bookings"`
+	}
+	if err := dec.Decode(&file); err != nil {
 		return nil, err
 	}
-	if len(rows) < 2 {
-		return nil, errors.New("csv has no data rows")
+	if len(file.Bookings) == 0 {
+		return nil, errors.New("no bookings in file")
 	}
 
-	col := map[string]int{}
-	for i, h := range rows[0] {
-		col[strings.ToLower(strings.TrimSpace(strings.TrimPrefix(h, "\ufeff")))] = i
+	seen := map[string]bool{}
+	for i := range file.Bookings {
+		b := &file.Bookings[i]
+		label := b.Name
+		if label == "" {
+			label = fmt.Sprintf("booking #%d", i+1)
+			b.Name = strconv.Itoa(i + 1)
+		}
+		if seen[b.Name] {
+			return nil, fmt.Errorf("%s: duplicate name", label)
+		}
+		seen[b.Name] = true
+		if err := b.validate(); err != nil {
+			return nil, fmt.Errorf("%s: %w", label, err)
+		}
+		if err := b.buildServices(); err != nil {
+			return nil, fmt.Errorf("%s: %w", label, err)
+		}
 	}
-	for _, req := range []string{"group", "start_date", "first_name", "last_name", "phone", "birth_date"} {
-		if _, ok := col[req]; !ok {
-			return nil, fmt.Errorf("csv missing column %q", req)
+	return file.Bookings, nil
+}
+
+func (b *Booking) validate() error {
+	if !dateRe.MatchString(b.StartDate) || !dateRe.MatchString(b.EndDate) {
+		return fmt.Errorf("start_date and end_date are required as YYYY-MM-DD (got %q, %q)", b.StartDate, b.EndDate)
+	}
+	if b.EndDate <= b.StartDate {
+		return fmt.Errorf("end_date %s must be after start_date %s", b.EndDate, b.StartDate)
+	}
+	if len(b.People) == 0 {
+		return errors.New("people is empty")
+	}
+	for i, p := range b.People {
+		who := fmt.Sprintf("person %d (%s)", i+1, p.FirstName)
+		switch {
+		case p.FirstName == "" || p.LastName == "":
+			return fmt.Errorf("%s: first_name and last_name are required", who)
+		case !phoneRe.MatchString(p.Phone):
+			return fmt.Errorf("%s: phone %q must be 10 digits starting with 0", who, p.Phone)
+		case !dateRe.MatchString(p.BirthDate):
+			return fmt.Errorf("%s: birth_date %q must be YYYY-MM-DD", who, p.BirthDate)
+		}
+	}
+	return nil
+}
+
+func (b *Booking) buildServices() error {
+	known := map[string]bool{}
+	for _, s := range serviceCatalog {
+		known[s.name] = true
+	}
+	for name, qty := range b.Services {
+		if !known[name] {
+			return fmt.Errorf("unknown service %q (known: %s)", name, serviceNames())
+		}
+		if qty < 0 {
+			return fmt.Errorf("service %s: qty must be >= 0", name)
 		}
 	}
 
-	var bookings []Booking
-	idx := map[string]int{}
-	for n, row := range rows[1:] {
-		get := func(name string) string {
-			if i, ok := col[name]; ok && i < len(row) {
-				return strings.TrimSpace(row[i])
-			}
-			return ""
-		}
-		line := n + 2
-		group := get("group")
-		if group == "" {
-			if strings.Join(row, "") == "" {
-				continue // blank line
-			}
-			return nil, fmt.Errorf("line %d: group is empty", line)
-		}
-
-		i, seen := idx[group]
-		if !seen {
-			b := Booking{
-				Group:       group,
-				StartDate:   get("start_date"),
-				EndDate:     get("end_date"),
-				Email:       get("email"),
-				Code:        get("code"),
-				Bank:        get("bank"),
-				BankAccNo:   get("bank_acc_no"),
-				BankAccName: get("bank_acc_name"),
-				Service1:    or(get("service1"), defaultService1),
-				Service2:    or(get("service2"), defaultService2),
-			}
-			if b.StartDate == "" {
-				return nil, fmt.Errorf("line %d: first row of group %q needs start_date", line, group)
-			}
-			if b.EndDate == "" {
-				return nil, fmt.Errorf("line %d: first row of group %q needs end_date", line, group)
-			}
-			bookings = append(bookings, b)
-			i = len(bookings) - 1
-			idx[group] = i
-		}
-
-		p := Person{
-			Prefix:    get("prefix"),
-			FirstName: get("first_name"),
-			LastName:  get("last_name"),
-			Phone:     get("phone"),
-			BirthDate: get("birth_date"),
-			IDCard:    get("id_card_number"),
-			Passport:  get("passport"),
-		}
-		if p.FirstName == "" || p.LastName == "" || p.Phone == "" || p.BirthDate == "" {
-			return nil, fmt.Errorf("line %d: first_name, last_name, phone, birth_date are required", line)
-		}
-		bookings[i].People = append(bookings[i].People, p)
+	type item struct {
+		ID  int `json:"id"`
+		Qty int `json:"qty"`
 	}
-	return bookings, nil
+	lists := map[int][]item{1: {}, 2: {}}
+	for _, s := range serviceCatalog {
+		qty, ok := b.Services[s.name]
+		if !ok {
+			qty = s.defaultQty(len(b.People))
+		}
+		lists[s.list] = append(lists[s.list], item{s.id, qty})
+	}
+	s1, _ := json.Marshal(lists[1])
+	s2, _ := json.Marshal(lists[2])
+	b.Service1, b.Service2 = string(s1), string(s2)
+	return nil
+}
+
+func serviceNames() string {
+	names := make([]string, len(serviceCatalog))
+	for i, s := range serviceCatalog {
+		names[i] = s.name
+	}
+	return strings.Join(names, ", ")
 }
 
 // formFields builds the multipart fields in the same order as the site's JS

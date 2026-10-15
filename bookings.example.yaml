@@ -1,0 +1,76 @@
+# คัดลอกเป็น bookings.yaml แล้วใส่ข้อมูลจริง (bookings.yaml อยู่ใน .gitignore)
+#
+# ทุก field แสดงไว้ครบ — ตัวที่ไม่บังคับ ลบออกได้ (จะใช้ค่าว่าง / default)
+# ค่าบังคับ (อบรม ประกัน ขยะ ชุดสุขา ค่าจอง กองทุน ค่าเข้าเขต มัดจำขยะ) ไม่ต้องใส่ — server คิดเอง
+
+bookings:
+  # ตัวอย่าง 1: 2 คน แชร์รถ เอาเต็นท์มาเอง (= ค่า default ทั้งหมด)
+  - name: ทริปปีใหม่ # บังคับ ชื่อเรียกเอง ห้ามซ้ำ (ใช้กับ -name และใน log)
+    start_date: 2026-01-31 # บังคับ วันขึ้น YYYY-MM-DD
+    end_date: 2026-02-01 # บังคับ วันลง YYYY-MM-DD
+    email: somchai@example.invalid
+    code: "" # โค้ดส่วนลด/รหัส (ถ้ามี)
+    bank: "" # บัญชีรับเงินคืน (ถ้ามี)
+    bank_acc_no: ""
+    bank_acc_name: ""
+    services:
+      # --- จ่ายล่วงหน้า ---
+      shared_car: 2 # แชร์ค่ารถ 600/คน              (default = จำนวนคน)
+      tent_rent: 0 # เต็นท์เช่าของเขต 300/เต็นท์     (default 0)
+      gas_stove: 0 # เตาแก๊ส 100/เตา                (default 0)
+      sleeping_pad: 0 # แผ่นรองนอน 50/แผ่น             (default 0)
+      pot: 0 # หม้อสนาม 80/ใบ                 (default 0)
+      gas_can: 0 # แก๊สกระป๋อง 60/กระป๋อง          (default 0)
+      sleeping_bag: 0 # ถุงนอน 100/ถุง                 (default 0)
+      meal_set: 0 # ชุดอาหาร 4 มื้อ 950/คน          (default 0)
+      # --- จ่ายที่เขตฯ ---
+      porter: 0 # ลูกหาบ                         (default 0)
+      own_tent_space: 2 # พื้นที่กางเต็นท์ที่นำมาเอง 30/คน  (default = จำนวนคน)
+      own_tent_count: 1 # จำนวนเต็นท์ที่นำมาเอง            (default 1)
+    people: # บังคับ อย่างน้อย 1 คน, คนแรก = ผู้จองหลัก
+      - prefix: นาย
+        first_name: สมชาย # บังคับ
+        last_name: ตัวอย่าง # บังคับ
+        phone: 0000000001 # บังคับ 10 หลัก ขึ้นต้น 0
+        birth_date: 1997-04-03 # บังคับ YYYY-MM-DD
+        id_card: 0000000000001 # คนไทย: เลขบัตร
+        passport: "" # ต่างชาติ: เลข passport
+      - prefix: นางสาว
+        first_name: สมหญิง
+        last_name: ตัวอย่าง
+        phone: 0000000002
+        birth_date: 1998-05-06
+        id_card: 0000000000002
+        passport: ""
+
+  # ตัวอย่าง 2: 1 คน ต่างชาติ เช่าของเขตทั้งหมด ไม่เอาเต็นท์มาเอง
+  - name: เดี่ยวกุมภา
+    start_date: 2026-02-07
+    end_date: 2026-02-08
+    email: john@example.invalid
+    code: ""
+    bank: ""
+    bank_acc_no: ""
+    bank_acc_name: ""
+    services:
+      # --- จ่ายล่วงหน้า ---
+      shared_car: 1
+      tent_rent: 1
+      gas_stove: 1
+      sleeping_pad: 1
+      pot: 1
+      gas_can: 1
+      sleeping_bag: 1
+      meal_set: 1
+      # --- จ่ายที่เขตฯ ---
+      porter: 0
+      own_tent_space: 0
+      own_tent_count: 0
+    people:
+      - prefix: Mr.
+        first_name: John
+        last_name: Example
+        phone: 0000000003
+        birth_date: 1990-01-01
+        id_card: ""
+        passport: X0000000

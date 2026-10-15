@@ -5,14 +5,40 @@ import (
 	"testing"
 )
 
-const sampleCSV = `group,start_date,end_date,prefix,first_name,last_name,phone,birth_date,id_card_number,passport,email,service1,service2
-A,2026-01-31,2026-02-01,นาย,สหรัก,มณู,0931942607,1997-04-03,,,a@example.com,"[{""id"":3,""qty"":1}]","[{""id"":25,""qty"":1}]"
-A,,,นาง,สมหญิง,ใจดี,0811111111,1998-05-06,1111111111111,,,,
-B,2026-02-07,2026-02-08,นาย,สมชาย,ดีใจ,0822222222,1990-01-01,2222222222222,,b@example.com,,
+const sampleYAML = `
+bookings:
+  - name: ทริปปีใหม่
+    start_date: 2026-01-31
+    end_date: 2026-02-01
+    email: a@example.invalid
+    people:
+      - prefix: นาย
+        first_name: สมชาย
+        last_name: ตัวอย่าง
+        phone: 0000000001        # unquoted: leading zero must survive
+        birth_date: 1997-04-03
+      - prefix: นาง
+        first_name: สมหญิง
+        last_name: ตัวอย่าง
+        phone: "0000000002"
+        birth_date: 1998-05-06
+        id_card: 0000000000002
+  - name: เดี่ยว
+    start_date: 2026-02-07
+    end_date: 2026-02-08
+    services:
+      shared_car: 0
+      meal_set: 1
+    people:
+      - first_name: John
+        last_name: Example
+        phone: 0000000003
+        birth_date: 1990-01-01
+        passport: X0000000
 `
 
-func TestLoadBookingsGroupsRows(t *testing.T) {
-	bs, err := loadBookings(strings.NewReader(sampleCSV))
+func TestLoadBookings(t *testing.T) {
+	bs, err := loadBookings(strings.NewReader(sampleYAML))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,26 +46,63 @@ func TestLoadBookingsGroupsRows(t *testing.T) {
 		t.Fatalf("want 2 bookings, got %d", len(bs))
 	}
 	a := bs[0]
-	if a.Group != "A" || len(a.People) != 2 || a.StartDate != "2026-01-31" || a.Email != "a@example.com" {
+	if a.Name != "ทริปปีใหม่" || len(a.People) != 2 || a.StartDate != "2026-01-31" || a.Email != "a@example.invalid" {
 		t.Fatalf("bad booking A: %+v", a)
 	}
-	if a.Service1 != `[{"id":3,"qty":1}]` {
-		t.Fatalf("service1 = %q", a.Service1)
-	}
-	if bs[1].Service1 != defaultService1 || bs[1].Service2 != defaultService2 {
-		t.Fatalf("booking B should use default services: %+v", bs[1])
+	if a.People[0].Phone != "0000000001" || a.People[1].IDCard != "0000000000002" {
+		t.Fatalf("leading zeros lost: %+v", a.People)
 	}
 }
 
-func TestLoadBookingsRejectsMissingStartDate(t *testing.T) {
-	csv := "group,start_date,end_date,prefix,first_name,last_name,phone,birth_date\nA,,,นาย,x,y,081,1990-01-01\n"
-	if _, err := loadBookings(strings.NewReader(csv)); err == nil {
-		t.Fatal("expected error for missing start_date")
+func TestDefaultServicesScaleWithPeople(t *testing.T) {
+	bs, err := loadBookings(strings.NewReader(sampleYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 2 people, no services given: shared_car=2, own_tent_space=2, own_tent_count=1
+	if !strings.Contains(bs[0].Service1, `{"id":3,"qty":2}`) {
+		t.Fatalf("service1 = %s", bs[0].Service1)
+	}
+	if bs[0].Service2 != `[{"id":17,"qty":0},{"id":25,"qty":2},{"id":26,"qty":1}]` {
+		t.Fatalf("service2 = %s", bs[0].Service2)
+	}
+}
+
+func TestExplicitServicesOverrideDefaults(t *testing.T) {
+	bs, err := loadBookings(strings.NewReader(sampleYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s1 := bs[1].Service1
+	if !strings.Contains(s1, `{"id":3,"qty":0}`) || !strings.Contains(s1, `{"id":35,"qty":1}`) {
+		t.Fatalf("service1 = %s", s1)
+	}
+	// every known service1 id is sent, like the browser does
+	for _, id := range []string{`"id":9,`, `"id":14,`} {
+		if !strings.Contains(s1, id) {
+			t.Fatalf("service1 missing %s: %s", id, s1)
+		}
+	}
+}
+
+func TestLoadBookingsErrors(t *testing.T) {
+	cases := map[string]string{
+		"missing start_date": "bookings:\n- name: x\n  end_date: 2026-01-02\n  people:\n  - {first_name: a, last_name: b, phone: '0800000000', birth_date: 1990-01-01}\n",
+		"no people":          "bookings:\n- name: x\n  start_date: 2026-01-01\n  end_date: 2026-01-02\n",
+		"unknown service":    "bookings:\n- name: x\n  start_date: 2026-01-01\n  end_date: 2026-01-02\n  services: {spaceship: 1}\n  people:\n  - {first_name: a, last_name: b, phone: '0800000000', birth_date: 1990-01-01}\n",
+		"typo field":         "bookings:\n- name: x\n  start_date: 2026-01-01\n  end_date: 2026-01-02\n  people:\n  - {first_name: a, last_name: b, phone: '0800000000', birthdate: 1990-01-01}\n",
+		"phone too short":    "bookings:\n- name: x\n  start_date: 2026-01-01\n  end_date: 2026-01-02\n  people:\n  - {first_name: a, last_name: b, phone: 812345678, birth_date: 1990-01-01}\n",
+		"duplicate name":     "bookings:\n- name: x\n  start_date: 2026-01-01\n  end_date: 2026-01-02\n  people:\n  - {first_name: a, last_name: b, phone: '0800000000', birth_date: 1990-01-01}\n- name: x\n  start_date: 2026-01-01\n  end_date: 2026-01-02\n  people:\n  - {first_name: a, last_name: b, phone: '0800000000', birth_date: 1990-01-01}\n",
+	}
+	for name, y := range cases {
+		if _, err := loadBookings(strings.NewReader(y)); err == nil {
+			t.Errorf("%s: expected error", name)
+		}
 	}
 }
 
 func TestFormFieldsMatchSite(t *testing.T) {
-	bs, err := loadBookings(strings.NewReader(sampleCSV))
+	bs, err := loadBookings(strings.NewReader(sampleYAML))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +136,7 @@ func TestFormFieldsMatchSite(t *testing.T) {
 		t.Fatalf("enc = %v", enc)
 	}
 	plain, err := cryptoJSDecrypt(enc[0], encPassphrase)
-	if err != nil || !strings.Contains(string(plain), `"first_name":"สหรัก"`) {
+	if err != nil || !strings.Contains(string(plain), `"first_name":"สมชาย"`) {
 		t.Fatalf("enc must describe first person, got %s (%v)", plain, err)
 	}
 	if len(get("code")) != 0 {
