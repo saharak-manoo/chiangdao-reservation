@@ -1,0 +1,4 @@
+group,start_date,end_date,prefix,first_name,last_name,phone,birth_date,id_card_number,passport,email,service1,service2,code,bank,bank_acc_no,bank_acc_name
+A,2026-01-31,2026-02-01,นาย,สมชาย,ตัวอย่าง,0000000001,1997-04-03,0000000000001,,a@example.invalid,,,,,,
+A,,,นางสาว,สมหญิง,ตัวอย่าง,0000000002,1998-05-06,0000000000002,,,,,,,,
+B,2026-02-07,2026-02-08,นาย,John,Example,0000000003,1990-01-01,,X0000000,b@example.invalid,,,,,,
