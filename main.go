@@ -16,10 +16,12 @@ import (
 	"time"
 )
 
-const (
-	baseURL   = "https://wildlifesanctuaryfca16.com"
-	apiURL    = baseURL + "/api/chiangdao/"
-	userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+const userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+
+// vars so tests can point them at a fake server.
+var (
+	baseURL = "https://wildlifesanctuaryfca16.com"
+	apiURL  = baseURL + "/api/chiangdao/"
 )
 
 var client = &http.Client{Timeout: 30 * time.Second}
@@ -38,6 +40,10 @@ func main() {
 	only := flag.String("name", "", "only process the booking with this name")
 	retries := flag.Int("retries", 5, "max attempts per booking on network/5xx errors")
 	retryDelay := flag.Duration("retry-delay", 2*time.Second, "delay between attempts")
+	watchMode := flag.Bool("watch", false, "keep running: wait for booking to open / seats to free up, book every booking, exit when all are booked (needs -submit to actually book)")
+	interval := flag.Duration("interval", time.Minute, "-watch: time between checks (min 30s)")
+	ignoreOpen := flag.Bool("ignore-open", false, "-watch: don't wait for /open to report open (use if that endpoint is broken while booking works)")
+	notify := flag.Bool("notify", true, "-watch: macOS notification on open / booked / error")
 	flag.Parse()
 
 	f, err := os.Open(*path)
@@ -63,10 +69,34 @@ func main() {
 		log.Fatal("no bookings to process")
 	}
 
+	if !*check {
+		today := time.Now().In(bangkok).Format("2006-01-02")
+		for _, b := range bookings {
+			if b.StartDate < today {
+				log.Fatalf("[%s] start_date %s has already passed — fix or remove it", b.Name, b.StartDate)
+			}
+		}
+	}
+
 	if *check {
 		for _, b := range bookings {
 			printStatus(b)
 		}
+		return
+	}
+
+	if *watchMode {
+		if *interval < 30*time.Second {
+			log.Fatal("-interval must be at least 30s (don't hammer the site)")
+		}
+		watch(bookings, watchOpts{
+			submit:     *submit,
+			interval:   *interval,
+			retries:    *retries,
+			retryDelay: *retryDelay,
+			ignoreOpen: *ignoreOpen,
+			notify:     *notify,
+		})
 		return
 	}
 
@@ -87,7 +117,7 @@ func main() {
 		if i > 0 {
 			time.Sleep(time.Second)
 		}
-		if err := book(b, *retries, *retryDelay); err != nil {
+		if out, err := book(b, *retries, *retryDelay); out == outError || out == outNoSeats {
 			log.Printf("[%s] FAILED: %v", b.Name, err)
 			failed = append(failed, b.Name)
 		}
@@ -123,7 +153,7 @@ func printStatus(b Booking) {
 	for _, r := range rs {
 		mark := ""
 		if bookingDate(r.StartDate) == b.StartDate {
-			mark = "  ← matches CSV start_date"
+			mark = "  ← matches start_date"
 		}
 		log.Printf("[%s] %s%s", b.Name, r, mark)
 	}
@@ -143,13 +173,22 @@ func waitUntil(s string) {
 	time.Sleep(d)
 }
 
-func book(b Booking, retries int, delay time.Duration) error {
+type outcome int
+
+const (
+	outBooked  outcome = iota // submitted and confirmed by check-reserve
+	outAlready                // an active reservation for that date already existed
+	outNoSeats                // not enough seats right now
+	outError                  // anything else; err says what
+)
+
+func book(b Booking, retries int, delay time.Duration) (outcome, error) {
 	phone, id := b.lookupKey()
 	if rs, err := checkReserve(phone, id); err != nil {
 		log.Printf("[%s] check-reserve failed (%v), submitting anyway", b.Name, err)
 	} else if r := findByStartDate(rs, b.StartDate); r != nil {
 		log.Printf("[%s] already booked, skipping: %s", b.Name, r)
-		return nil
+		return outAlready, nil
 	}
 
 	if left, err := capacity(b.StartDate); err != nil {
@@ -157,7 +196,7 @@ func book(b Booking, retries int, delay time.Duration) error {
 	} else {
 		log.Printf("[%s] %s: %d seat(s) left, need %d", b.Name, b.StartDate, left, len(b.People))
 		if left < len(b.People) {
-			return fmt.Errorf("not enough seats on %s (%d left)", b.StartDate, left)
+			return outNoSeats, fmt.Errorf("not enough seats on %s (%d left)", b.StartDate, left)
 		}
 	}
 
@@ -173,17 +212,20 @@ func book(b Booking, retries int, delay time.Duration) error {
 			var r apiResp
 			if json.Unmarshal(body, &r) == nil && r.Status == "success" {
 				log.Printf("[%s] form accepted: %s %s", b.Name, r.Message, trim(r.Data))
-				return verifyBooked(b)
+				if err := verifyBooked(b); err != nil {
+					return outError, err
+				}
+				return outBooked, nil
 			}
-			// 4xx / business error (full, duplicate, bad data): retrying won't help.
-			return fmt.Errorf("HTTP %d: %s", status, trim(body))
+			// 4xx / business error (full, duplicate, bad data): retrying now won't help.
+			return outError, fmt.Errorf("HTTP %d: %s", status, trim(body))
 		}
 		log.Printf("[%s] attempt %d/%d: %v", b.Name, attempt, retries, lastErr)
 		if attempt < retries {
 			time.Sleep(delay)
 		}
 	}
-	return lastErr
+	return outError, lastErr
 }
 
 // verifyBooked confirms via check-reserve that the reservation really exists.

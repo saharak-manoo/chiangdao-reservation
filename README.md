@@ -6,7 +6,8 @@
 
 ```bash
 go build -o chiangdao-reservation .
-cp bookings.example.yaml bookings.yaml   # แก้ข้อมูลจริง (bookings.yaml อยู่ใน .gitignore)
+cp bookings.example.yaml bookings.yaml   # หลายคน/หลายใบ — แก้ข้อมูลจริง (bookings.yaml อยู่ใน .gitignore)
+cp bookings.single.example.yaml bookings.yaml   # หรือ: จองคนเดียว
 
 ./chiangdao-reservation                                     # dry-run: แสดงสิ่งที่จะส่ง ไม่ยิงจริง
 ./chiangdao-reservation -submit                             # จองจริงทันที
@@ -24,6 +25,36 @@ cp bookings.example.yaml bookings.yaml   # แก้ข้อมูลจริ�
 | `-name` | ว่าง | จองเฉพาะการจองชื่อนี้ |
 | `-retries` | `5` | จำนวนครั้งสูงสุดต่อการจอง (retry เฉพาะ network error / HTTP 5xx) |
 | `-retry-delay` | `2s` | เว้นระหว่าง retry |
+| `-watch` | `false` | รันค้างไว้ วนเช็คแล้วจองเองจนครบ (ดูด้านล่าง) |
+| `-interval` | `1m` | `-watch`: ระยะห่างแต่ละรอบ (ต่ำสุด 30s) |
+| `-ignore-open` | `false` | `-watch`: ไม่ต้องรอ `/open` บอกว่าเปิด (ใช้ถ้า endpoint นั้นพังทั้งที่จองได้) |
+| `-notify` | `true` | `-watch`: แจ้งเตือน macOS (มีเสียง) |
+
+## โหมดรันค้าง (`-watch`)
+
+```bash
+./chiangdao-reservation -watch            # เฝ้าดูอย่างเดียว: แจ้งเตือนเมื่อเปิดจอง/มีที่ว่าง ไม่จอง
+./chiangdao-reservation -watch -submit    # จองเองอัตโนมัติ
+
+# Mac หลับ = โปรแกรมหยุด → กันเครื่องหลับระหว่างรัน (ปิดฝาจอยังหลับอยู่ดี ถ้าไม่ได้ต่อจอ/ไฟ)
+caffeinate -is ./chiangdao-reservation -watch -submit
+```
+
+ทุกรอบ (default ทุก 1 นาที ±10%):
+
+1. ข้ามการจองที่ `start_date` ผ่านไปแล้ว (แจ้งเตือน "เลยวันแล้ว") — ไม่เหลืออะไร → จบโปรแกรม
+2. `GET /open` — ยังไม่เปิด → รอรอบถัดไป; เพิ่งเปิด → แจ้งเตือน "เปิดจองแล้ว"
+3. ต่อการจองที่ยังไม่เสร็จ (ห่างกัน 1 วินาที):
+   - มีใบจอง (ไม่ใช่ `CANCEL`) อยู่แล้ว → เสร็จ
+   - ที่ว่างไม่พอ → รอรอบถัดไป (กรณีรอคนยกเลิก/ไม่จ่ายเงินจนหมดอายุ)
+   - ว่างพอ → ยิงฟอร์ม → ยืนยันด้วย `check-reserve` → แจ้งเตือน "จองสำเร็จ ✔ รีบชำระเงิน"
+   - ฟอร์มโดน reject / error → พักการจองนั้น 5 → 10 → 20 → 30 นาที (ไม่ยิงรัว), แจ้งเตือนครั้งเดียวต่อ error แบบเดิม
+4. จองครบทุกใบ → จบโปรแกรม
+
+ไม่มี `-submit` = แจ้งเตือน "มีที่ว่าง" เมื่อที่ว่างพอ (ครั้งเดียวต่อจำนวนที่ว่างที่เปลี่ยน) แต่ไม่จอง.
+หยุด/รันใหม่ได้ตลอด — สถานะจริงดูจาก `check-reserve` จึงไม่จองซ้ำ.
+
+ข้อควรรู้: `/open` ตอนนี้ใช้เวลา ~10 วินาทีกว่าจะตอบ 500 — ปกติ ไม่ได้ค้าง.
 
 ## รูปแบบไฟล์ YAML
 
@@ -50,6 +81,7 @@ bookings:
 - ไม่ต้องใส่ `"..."` ครอบเบอร์/เลขบัตร — เลข 0 ข้างหน้าไม่หาย
 - พิมพ์ชื่อ field ผิด → error บอกบรรทัด (ไม่เงียบ)
 - ตรวจ: วันที่เป็น `YYYY-MM-DD`, `end_date` > `start_date`, เบอร์ 10 หลักขึ้นต้น 0, มีอย่างน้อย 1 คน, ชื่อ service ต้องรู้จัก
+- `start_date` ที่ผ่านไปแล้ว → error ตอนเริ่ม (ยกเว้น `-check`)
 - `birth_date` ถูกแปลงเป็น `Thu Apr 03 1997 00:00:00 GMT+0700 (Indochina Time)` เหมือน browser
 
 ### services
@@ -115,7 +147,7 @@ CryptoJS.AES.encrypt(
 
 ## ยังไม่รู้ / ข้อจำกัด
 
-- ยังไม่เคยยิง `-submit` จริง (ระบบยังไม่เปิด) — response ของ `reservation/form` ยังไม่รู้ (log body ดิบไว้ แล้วยืนยันผลด้วย `check-reserve`)
+- ยังไม่เคยยิง `-submit` จริง (ระบบยังไม่เปิด; `-watch` ทดสอบกับเว็บจำลองใน `watch_test.go`) — response ของ `reservation/form` ยังไม่รู้ (log body ดิบไว้ แล้วยืนยันผลด้วย `check-reserve`)
 - จองหลายคนในใบเดียวทำตาม JS ของเว็บ ยังไม่ได้ทดสอบจริง; จำนวนคนสูงสุดต่อใบยังไม่รู้
 - หลังจองเว็บมี step อัปโหลดเอกสาร/สลิป (`upload-permission-doc-multi`, `upload-slip`) และ QR (`payment/qr`) — ยังไม่ทำ ต้องทำผ่านเว็บ
 - ถ้าเว็บเปลี่ยน key ใน JS bundle ต้องอัปเดต `crypto.go`
