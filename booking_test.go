@@ -8,8 +8,8 @@ import (
 const sampleYAML = `
 bookings:
   - name: ทริปปีใหม่
-    start_date: 2026-01-31
-    end_date: 2026-02-01
+    start_date: 2026-12-05
+    end_date: 2026-12-06
     email: a@example.invalid
     people:
       - prefix: นาย
@@ -24,8 +24,8 @@ bookings:
         birth_date: 1998-05-06
         id_card: 0000000000002
   - name: เดี่ยว
-    start_date: 2026-02-07
-    end_date: 2026-02-08
+    start_date: 2026-12-19
+    end_date: 2026-12-20
     services:
       shared_car: 0
       meal_set: 1
@@ -46,7 +46,7 @@ func TestLoadBookings(t *testing.T) {
 		t.Fatalf("want 2 bookings, got %d", len(bs))
 	}
 	a := bs[0]
-	if a.Name != "ทริปปีใหม่" || len(a.People) != 2 || a.StartDate != "2026-01-31" || a.Email != "a@example.invalid" {
+	if a.Name != "ทริปปีใหม่" || len(a.People) != 2 || a.StartDate != "2026-12-05" || a.Email != "a@example.invalid" {
 		t.Fatalf("bad booking A: %+v", a)
 	}
 	if a.People[0].Phone != "0000000001" || a.People[1].IDCard != "0000000000002" {
@@ -87,13 +87,21 @@ func TestExplicitServicesOverrideDefaults(t *testing.T) {
 
 func TestLoadBookingsErrors(t *testing.T) {
 	cases := map[string]string{
-		"missing start_date": "bookings:\n- name: x\n  end_date: 2026-01-02\n  people:\n  - {first_name: a, last_name: b, phone: '0800000000', birth_date: 1990-01-01}\n",
-		"no people":          "bookings:\n- name: x\n  start_date: 2026-01-01\n  end_date: 2026-01-02\n",
-		"unknown service":    "bookings:\n- name: x\n  start_date: 2026-01-01\n  end_date: 2026-01-02\n  services: {spaceship: 1}\n  people:\n  - {first_name: a, last_name: b, phone: '0800000000', birth_date: 1990-01-01}\n",
-		"typo field":         "bookings:\n- name: x\n  start_date: 2026-01-01\n  end_date: 2026-01-02\n  people:\n  - {first_name: a, last_name: b, phone: '0800000000', birthdate: 1990-01-01}\n",
-		"phone too short":    "bookings:\n- name: x\n  start_date: 2026-01-01\n  end_date: 2026-01-02\n  people:\n  - {first_name: a, last_name: b, phone: 812345678, birth_date: 1990-01-01}\n",
-		"duplicate name":     "bookings:\n- name: x\n  start_date: 2026-01-01\n  end_date: 2026-01-02\n  people:\n  - {first_name: a, last_name: b, phone: '0800000000', birth_date: 1990-01-01}\n- name: x\n  start_date: 2026-01-01\n  end_date: 2026-01-02\n  people:\n  - {first_name: a, last_name: b, phone: '0800000000', birth_date: 1990-01-01}\n",
+		"missing start_date": "bookings:\n- name: x\n  end_date: 2026-12-06\n  people:\n  - {first_name: a, last_name: b, phone: '0800000000', birth_date: 1990-01-01}\n",
+		"no people":          "bookings:\n- name: x\n  start_date: 2026-12-05\n  end_date: 2026-12-06\n",
+		"unknown service":    "bookings:\n- name: x\n  start_date: 2026-12-05\n  end_date: 2026-12-06\n  services: {spaceship: 1}\n  people:\n  - {first_name: a, last_name: b, phone: '0800000000', birth_date: 1990-01-01}\n",
+		"typo field":         "bookings:\n- name: x\n  start_date: 2026-12-05\n  end_date: 2026-12-06\n  people:\n  - {first_name: a, last_name: b, phone: '0800000000', birthdate: 1990-01-01}\n",
+		"phone too short":    "bookings:\n- name: x\n  start_date: 2026-12-05\n  end_date: 2026-12-06\n  people:\n  - {first_name: a, last_name: b, phone: 812345678, birth_date: 1990-01-01}\n",
+		"duplicate name":     "bookings:\n- name: x\n  start_date: 2026-12-05\n  end_date: 2026-12-06\n  people:\n  - {first_name: a, last_name: b, phone: '0800000000', birth_date: 1990-01-01}\n- name: x\n  start_date: 2026-12-05\n  end_date: 2026-12-06\n  people:\n  - {first_name: a, last_name: b, phone: '0800000000', birth_date: 1990-01-01}\n",
 	}
+	one := "  people:\n  - {first_name: a, last_name: b, phone: '0800000000', birth_date: 1990-01-01}\n"
+	cases["3 people"] = "bookings:\n- name: x\n  start_date: 2026-12-05\n  end_date: 2026-12-06\n" + one +
+		"  - {first_name: c, last_name: d, phone: '0800000001', birth_date: 1990-01-01}\n" +
+		"  - {first_name: e, last_name: f, phone: '0800000002', birth_date: 1990-01-01}\n"
+	cases["2 nights"] = "bookings:\n- name: x\n  start_date: 2026-12-05\n  end_date: 2026-12-07\n" + one
+	cases["wednesday"] = "bookings:\n- name: x\n  start_date: 2026-12-16\n  end_date: 2026-12-17\n" + one
+	cases["before season"] = "bookings:\n- name: x\n  start_date: 2026-11-14\n  end_date: 2026-11-15\n" + one
+	cases["after season"] = "bookings:\n- name: x\n  start_date: 2027-02-13\n  end_date: 2027-02-14\n" + one
 	for name, y := range cases {
 		if _, err := loadBookings(strings.NewReader(y)); err == nil {
 			t.Errorf("%s: expected error", name)

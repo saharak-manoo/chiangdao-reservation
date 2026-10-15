@@ -21,6 +21,11 @@ type watchOpts struct {
 	ignoreOpen bool
 	notify     bool
 
+	// Until fastUntil, poll every fastInterval and back off errors only fastInterval*3:
+	// seats at opening time go in minutes.
+	fastInterval time.Duration
+	fastUntil    time.Time
+
 	// test hooks
 	sleep func(time.Duration)
 	now   func() time.Time
@@ -117,9 +122,16 @@ func watch(bookings []Booking, o watchOpts) {
 		}
 
 		// ±10% jitter so we don't hit the site on an exact beat.
-		j := time.Duration(float64(o.interval) * (0.9 + 0.2*rand.Float64()))
-		o.sleep(j)
+		iv := o.interval
+		if o.fast() {
+			iv = o.fastInterval
+		}
+		o.sleep(time.Duration(float64(iv) * (0.9 + 0.2*rand.Float64())))
 	}
+}
+
+func (o watchOpts) fast() bool {
+	return o.fastInterval > 0 && o.now().Before(o.fastUntil)
 }
 
 func tick(b Booking, st *watchState, o watchOpts) {
@@ -148,9 +160,12 @@ func tick(b Booking, st *watchState, o watchOpts) {
 	case outNoSeats:
 		// normal while waiting for someone to drop out; check again next tick
 	case outError:
-		if st.backoff == 0 {
+		switch {
+		case o.fast():
+			st.backoff = o.fastInterval * 3
+		case st.backoff == 0:
 			st.backoff = minBackoff
-		} else {
+		default:
 			st.backoff = min(st.backoff*2, maxBackoff)
 		}
 		st.nextTry = o.now().Add(st.backoff)

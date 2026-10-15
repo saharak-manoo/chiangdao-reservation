@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -69,6 +70,15 @@ type Booking struct {
 	Service2 string `yaml:"-"`
 }
 
+// Season rules from the official announcement (registration 26–30 Oct 2026).
+// Update every season.
+const (
+	seasonStart      = "2026-11-16"
+	seasonEnd        = "2027-02-12"
+	maxPeoplePerBook = 2
+	closedWeekday    = time.Wednesday
+)
+
 var (
 	dateRe  = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 	phoneRe = regexp.MustCompile(`^0\d{9}$`)
@@ -113,11 +123,21 @@ func (b *Booking) validate() error {
 	if !dateRe.MatchString(b.StartDate) || !dateRe.MatchString(b.EndDate) {
 		return fmt.Errorf("start_date and end_date are required as YYYY-MM-DD (got %q, %q)", b.StartDate, b.EndDate)
 	}
-	if b.EndDate <= b.StartDate {
-		return fmt.Errorf("end_date %s must be after start_date %s", b.EndDate, b.StartDate)
+	start, _ := time.Parse("2006-01-02", b.StartDate)
+	if want := start.AddDate(0, 0, 1).Format("2006-01-02"); b.EndDate != want {
+		return fmt.Errorf("only 1-night stays are allowed: end_date must be %s (got %s)", want, b.EndDate)
+	}
+	if b.StartDate < seasonStart || b.StartDate > seasonEnd {
+		return fmt.Errorf("start_date %s is outside the season %s – %s", b.StartDate, seasonStart, seasonEnd)
+	}
+	if start.Weekday() == closedWeekday {
+		return fmt.Errorf("start_date %s is a %s (closed every %s)", b.StartDate, start.Weekday(), closedWeekday)
 	}
 	if len(b.People) == 0 {
 		return errors.New("people is empty")
+	}
+	if len(b.People) > maxPeoplePerBook {
+		return fmt.Errorf("max %d people per booking (got %d) — split into another booking", maxPeoplePerBook, len(b.People))
 	}
 	for i, p := range b.People {
 		who := fmt.Sprintf("person %d (%s)", i+1, p.FirstName)

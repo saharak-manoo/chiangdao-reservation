@@ -36,7 +36,7 @@ func main() {
 	path := flag.String("file", "bookings.yaml", "YAML file with bookings (see bookings.example.yaml)")
 	submit := flag.Bool("submit", false, "really submit; without it only prints what would be sent")
 	check := flag.Bool("check", false, "only look up existing reservations for each booking (no booking made)")
-	at := flag.String("at", "", `wait until this Bangkok time before submitting, e.g. "2026-10-17 09:00:00"`)
+	at := flag.String("at", "", `wait until this Bangkok time before starting, e.g. "2026-10-26 07:59:00"`)
 	only := flag.String("name", "", "only process the booking with this name")
 	retries := flag.Int("retries", 5, "max attempts per booking on network/5xx errors")
 	retryDelay := flag.Duration("retry-delay", 2*time.Second, "delay between attempts")
@@ -44,6 +44,8 @@ func main() {
 	interval := flag.Duration("interval", time.Minute, "-watch: time between checks (min 30s)")
 	ignoreOpen := flag.Bool("ignore-open", false, "-watch: don't wait for /open to report open (use if that endpoint is broken while booking works)")
 	notify := flag.Bool("notify", true, "-watch: macOS notification on open / booked / error")
+	fastInterval := flag.Duration("fast-interval", 10*time.Second, "-watch with -at: poll interval right after -at (min 5s)")
+	fastFor := flag.Duration("fast-for", 15*time.Minute, "-watch with -at: how long to poll at -fast-interval after -at")
 	flag.Parse()
 
 	f, err := os.Open(*path)
@@ -89,13 +91,24 @@ func main() {
 		if *interval < 30*time.Second {
 			log.Fatal("-interval must be at least 30s (don't hammer the site)")
 		}
+		if *fastInterval < 5*time.Second {
+			log.Fatal("-fast-interval must be at least 5s")
+		}
+		var fastUntil time.Time
+		if *at != "" {
+			waitUntil(*at)
+			fastUntil = time.Now().Add(*fastFor)
+			log.Printf("watch: polling every %s until %s", *fastInterval, fastUntil.In(bangkok).Format("15:04:05"))
+		}
 		watch(bookings, watchOpts{
-			submit:     *submit,
-			interval:   *interval,
-			retries:    *retries,
-			retryDelay: *retryDelay,
-			ignoreOpen: *ignoreOpen,
-			notify:     *notify,
+			fastInterval: *fastInterval,
+			fastUntil:    fastUntil,
+			submit:       *submit,
+			interval:     *interval,
+			retries:      *retries,
+			retryDelay:   *retryDelay,
+			ignoreOpen:   *ignoreOpen,
+			notify:       *notify,
 		})
 		return
 	}

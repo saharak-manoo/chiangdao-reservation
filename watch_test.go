@@ -82,13 +82,13 @@ func testBooking(t *testing.T) Booking {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return bs[0] // start_date 2026-01-31
+	return bs[0] // start_date 2026-12-05
 }
 
 func TestWatchWaitsForOpenAndSeatsThenBooksOnce(t *testing.T) {
-	clock := &fakeClock{time.Date(2026, 1, 20, 9, 0, 0, 0, bangkok)}
+	clock := &fakeClock{time.Date(2026, 11, 25, 9, 0, 0, 0, bangkok)}
 	site := &fakeSite{openAfter: 3, seatsAfter: 2, formStatus: 200, formBody: `{"status":"success","message":"done"}`,
-		clock: clock.now, reserveDate: "2026-01-31"}
+		clock: clock.now, reserveDate: "2026-12-05"}
 	startFakeSite(t, site)
 
 	var alerts []string
@@ -111,7 +111,7 @@ func TestWatchWaitsForOpenAndSeatsThenBooksOnce(t *testing.T) {
 }
 
 func TestWatchBacksOffOnRejectedForm(t *testing.T) {
-	clock := &fakeClock{time.Date(2026, 1, 30, 9, 0, 0, 0, bangkok)}
+	clock := &fakeClock{time.Date(2026, 12, 3, 9, 0, 0, 0, bangkok)}
 	site := &fakeSite{formStatus: 400, formBody: `{"status":"error","message":"full"}`, clock: clock.now}
 	startFakeSite(t, site)
 
@@ -122,7 +122,7 @@ func TestWatchBacksOffOnRejectedForm(t *testing.T) {
 		alert: func(title, _ string) { alerts = append(alerts, title) },
 	})
 
-	// runs until the start date passes (~39h), so must have retried, but never faster than the backoff
+	// runs until the start date passes (~2 days), so must have retried, but never faster than the backoff
 	if len(site.formPosts) < 2 {
 		t.Fatalf("should keep retrying, got %d posts", len(site.formPosts))
 	}
@@ -146,7 +146,7 @@ func TestWatchBacksOffOnRejectedForm(t *testing.T) {
 }
 
 func TestWatchOnlyNeverPostsForm(t *testing.T) {
-	clock := &fakeClock{time.Date(2026, 1, 30, 22, 0, 0, 0, bangkok)}
+	clock := &fakeClock{time.Date(2026, 12, 4, 22, 0, 0, 0, bangkok)}
 	site := &fakeSite{formStatus: 200, clock: clock.now}
 	startFakeSite(t, site)
 
@@ -178,5 +178,31 @@ func TestParseOpen(t *testing.T) {
 		if ok, _ := parseOpen([]byte(body)); ok {
 			t.Fatalf("%s should be closed", body)
 		}
+	}
+}
+
+func TestWatchPollsFastRightAfterAt(t *testing.T) {
+	clock := &fakeClock{time.Date(2026, 12, 4, 22, 0, 0, 0, bangkok)}
+	site := &fakeSite{seatsAfter: 1 << 30, clock: clock.now} // never any seats
+	startFakeSite(t, site)
+
+	start := clock.now()
+	var fastPhase int
+	watch([]Booking{testBooking(t)}, watchOpts{
+		submit: true, interval: time.Minute, retries: 1,
+		fastInterval: 10 * time.Second, fastUntil: start.Add(10 * time.Minute),
+		sleep: func(d time.Duration) {
+			if clock.now().Before(start.Add(10 * time.Minute)) {
+				fastPhase++
+				if d > 11*time.Second {
+					t.Fatalf("slept %s inside fast window", d)
+				}
+			}
+			clock.sleep(d)
+		},
+		now: clock.now, alert: func(string, string) {},
+	})
+	if fastPhase < 50 {
+		t.Fatalf("expected ~60 fast ticks in 10m, got %d", fastPhase)
 	}
 }
